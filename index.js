@@ -1415,6 +1415,13 @@ function initializeModules(bot, mcData, defaultMove) {
       if (type === "register") {
         bot.chat(`/register ${password} ${password}`);
         addLog("[Auth] Detected register prompt - sent /register");
+        // After register, always follow up with login 2s later
+        setTimeout(() => {
+          if (bot && botState.connected) {
+            bot.chat(`/login ${password}`);
+            addLog("[Auth] Sent /login after register");
+          }
+        }, 2000);
       } else {
         bot.chat(`/login ${password}`);
         addLog("[Auth] Detected login prompt - sent /login");
@@ -1424,35 +1431,25 @@ function initializeModules(bot, mcData, defaultMove) {
     bot.on("messagestr", (message) => {
       if (authHandled) return;
       const msg = message.toLowerCase();
-      if (
-        msg.includes("/register") ||
-        msg.includes("register ") ||
-        msg.includes("지정된 비밀번호")
-      ) {
+      if (msg.includes("/register") || msg.includes("register ")) {
         tryAuth("register");
-      } else if (
-        msg.includes("/login") ||
-        msg.includes("login ") ||
-        msg.includes("로그인")
-      ) {
+      } else if (msg.includes("/login") || msg.includes("login ")) {
         tryAuth("login");
       }
     });
 
-    // Failsafe: if no prompt after 25s, try register then login
-    // Aternos servers load slowly - 10s was too short and caused premature kicks
-    setTimeout(() => {
+    // Failsafe: fires once after 25s if no prompt was received
+    const authFailsafeTimer = setTimeout(() => {
       if (!authHandled && bot && botState.connected) {
         authHandled = true;
-        addLog("[Auth] No prompt detected after 25s, trying /register then /login as failsafe");
-        bot.chat(`/register ${password} ${password}`);
-        setTimeout(() => {
-          if (bot && botState.connected) {
-            bot.chat(`/login ${password}`);
-          }
-        }, 2000);
+        addLog("[Auth] No prompt after 25s — sending /login as failsafe");
+        bot.chat(`/login ${password}`);
       }
     }, 25000);
+
+    // Cancel failsafe if bot disconnects before it fires (prevents double-auth on reconnect)
+    bot.once("end", () => clearTimeout(authFailsafeTimer));
+    bot.once("kicked", () => clearTimeout(authFailsafeTimer));
   }
 
   // ---------- CHAT MESSAGES ----------
@@ -1635,50 +1632,51 @@ function initializeModules(bot, mcData, defaultMove) {
 function startCircleWalk(bot, defaultMove) {
   const radius = config.movement["circle-walk"].radius || 4;
   let angle = 0;
-  let isPausing = false;
+  let stepCount = 0;
 
-  // Use self-scheduling timeout instead of fixed interval so speed varies
-  const scheduleNextStep = () => {
-    // Occasionally pause like a real player would
-    if (Math.random() < 0.15) {
-      isPausing = true;
-      const pauseTime = 3000 + Math.floor(Math.random() * 8000); // 3-11s pause
-      addLog(`[CircleWalk] Taking a ${Math.round(pauseTime/1000)}s break`);
-      setTimeout(() => {
-        isPausing = false;
-        scheduleNextStep();
-      }, pauseTime);
-      return;
+  // Fixed interval loop — but every ~5 steps we take ONE deliberate pause
+  // This is reliable and doesn't spam breaks like recursive scheduling did
+  const STEP_INTERVAL = 3500; // walk a step every 3.5s
+
+  const walkStep = () => {
+    if (!bot || !botState.connected) return;
+
+    stepCount++;
+
+    // Every 5-10 steps, take a single human-like pause (skip one tick)
+    if (stepCount % (5 + Math.floor(Math.random() * 6)) === 0) {
+      const pauseSteps = 1 + Math.floor(Math.random() * 3); // skip 1-3 ticks (~3-10s)
+      addLog(`[CircleWalk] Pausing for ${pauseSteps} steps`);
+      // Just don't set a new goal — bot stays still naturally during the pause
+      setTimeout(() => {}, pauseSteps * STEP_INTERVAL);
+      return; // skip pathfinder goal this tick; next interval fires normally
     }
 
-    // Variable step speed — sometimes fast, sometimes slow
-    const stepDelay = 2000 + Math.floor(Math.random() * 4000); // 2-6s per step
+    try {
+      const pos = bot.entity.position;
+      // Anchor the circle to spawn position so it doesn't drift across the map
+      const x = pos.x + Math.cos(angle) * radius;
+      const z = pos.z + Math.sin(angle) * radius;
 
-    setTimeout(() => {
-      if (!bot || !botState.connected) return scheduleNextStep();
-      try {
-        const x = bot.entity.position.x + Math.cos(angle) * radius;
-        const z = bot.entity.position.z + Math.sin(angle) * radius;
-        bot.pathfinder.setMovements(defaultMove);
-        bot.pathfinder.setGoal(
-          new GoalBlock(
-            Math.floor(x),
-            Math.floor(bot.entity.position.y),
-            Math.floor(z),
-          ),
-        );
-        // Step size varies — sometimes a small move, sometimes a bigger arc
-        angle += (Math.PI / 4) * (0.5 + Math.random());
-        botState.lastActivity = Date.now();
-      } catch (e) {
-        addLog("[CircleWalk] Error: " + e.message);
-      }
-      scheduleNextStep();
-    }, stepDelay);
+      bot.pathfinder.setMovements(defaultMove);
+      bot.pathfinder.setGoal(
+        new GoalBlock(Math.floor(x), Math.floor(pos.y), Math.floor(z))
+      );
+
+      // Vary arc size slightly — sometimes small steps, sometimes bigger
+      angle += (Math.PI / 4) * (0.7 + Math.random() * 0.6);
+      botState.lastActivity = Date.now();
+    } catch (e) {
+      addLog("[CircleWalk] Error: " + e.message);
+    }
   };
 
-  // Delay start so auth finishes first
-  setTimeout(scheduleNextStep, 8000);
+  // Delay start by 8s so auth completes first, then run every STEP_INTERVAL
+  setTimeout(() => {
+    addInterval(walkStep, STEP_INTERVAL);
+    addLog("[CircleWalk] Walking started");
+  }, 8000);
+
   addLog("[CircleWalk] Started — variable speed human-like walking");
 }
 
