@@ -6,6 +6,7 @@ const config = require("./settings.json");
 
 let bot = null;
 let activeIntervals = [];
+let isSleeping = false;
 
 function clearAllIntervals() {
   activeIntervals.forEach(clearInterval);
@@ -46,9 +47,9 @@ function createBot() {
 
     bot.pathfinder.setMovements(moves);
 
-    // 🔥 IMPORTANT DELAY (fixes 90% of "not moving")
     setTimeout(() => {
       startAntiAFK();
+      startSleepSystem();
     }, 5000);
   });
 
@@ -61,6 +62,55 @@ function createBot() {
   bot.on("error", (e) => {
     addLog("[Bot] Error: " + e.message);
   });
+
+  bot.on("wake", () => {
+    isSleeping = false;
+    addLog("[Sleep] Woke up");
+  });
+}
+
+function isNight() {
+  const time = bot.time.timeOfDay;
+  return time > 13000 && time < 23000;
+}
+
+function startSleepSystem() {
+  addLog("[Sleep] System started");
+
+  addInterval(async () => {
+    if (!bot?.entity) return;
+    if (isSleeping) return;
+    if (!isNight()) return;
+
+    try {
+      const bed = bot.findBlock({
+        matching: block => bot.isABed(block),
+        maxDistance: 32
+      });
+
+      if (!bed) return;
+
+      addLog("[Sleep] Bed found, going to sleep");
+
+      isSleeping = true;
+
+      await bot.pathfinder.goto(
+        new GoalNear(bed.position.x, bed.position.y, bed.position.z, 2)
+      );
+
+      try {
+        await bot.sleep(bed);
+        addLog("[Sleep] Sleeping now...");
+      } catch (err) {
+        addLog("[Sleep] Failed: " + err.message);
+        isSleeping = false;
+      }
+
+    } catch (e) {
+      addLog("[Sleep Error] " + e.message);
+      isSleeping = false;
+    }
+  }, 10000);
 }
 
 function startAntiAFK() {
@@ -69,14 +119,18 @@ function startAntiAFK() {
 
   addLog("[AntiAFK] Started");
 
-  // 🔥 MAIN MOVEMENT (pathfinder)
-  addInterval(() => {
-    if (!bot.entity) return;
+  // STOP movement while sleeping
+  function safe(fn) {
+    return () => {
+      if (!bot?.entity || isSleeping) return;
+      fn();
+    };
+  }
 
-    // update center (prevents stuck behavior)
+  addInterval(safe(() => {
     center = bot.entity.position.clone();
 
-    if (!bot.pathfinder.isMoving()) {
+    if (!bot.pathfinder.isMoving() && !isSleeping) {
       const x = center.x + Math.cos(angle) * 2;
       const z = center.z + Math.sin(angle) * 2;
 
@@ -87,12 +141,9 @@ function startAntiAFK() {
       angle += Math.PI / 4;
     }
 
-  }, 4000);
+  }), 4000);
 
-  // 🔥 FALLBACK MOVEMENT (GUARANTEED movement)
-  addInterval(() => {
-    if (!bot.entity) return;
-
+  addInterval(safe(() => {
     const actions = ["forward", "left", "right"];
     const action = actions[Math.floor(Math.random() * actions.length)];
 
@@ -102,38 +153,27 @@ function startAntiAFK() {
       bot.setControlState(action, false);
     }, 1000 + Math.random() * 1000);
 
-  }, 6000);
+  }), 6000);
 
-  // LOOK AROUND
-  addInterval(() => {
-    if (!bot.entity) return;
-
+  addInterval(safe(() => {
     bot.look(
       Math.random() * Math.PI * 2,
       (Math.random() - 0.5) * 0.5,
       true
     );
+  }), 5000);
 
-  }, 5000);
-
-  // JUMP
-  addInterval(() => {
-    if (!bot.entity) return;
-
+  addInterval(safe(() => {
     bot.setControlState("jump", true);
+
     setTimeout(() => {
       bot.setControlState("jump", false);
     }, 300);
+  }), 15000);
 
-  }, 15000);
-
-  // ARM SWING
-  addInterval(() => {
-    if (!bot.entity) return;
+  addInterval(safe(() => {
     bot.swingArm();
-  }, 20000);
-
-  // ⚠️ REMOVED clearControlStates (THIS WAS BREAKING EVERYTHING)
+  }), 20000);
 }
 
 createBot();
