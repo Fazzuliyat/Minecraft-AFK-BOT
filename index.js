@@ -1477,153 +1477,142 @@ function initializeModules(bot, mcData, defaultMove) {
   }
 
   // ---------- MOVE TO POSITION ----------
-  // FIX: only use position goal if circle-walk is NOT enabled (they fight over pathfinder)
-  if (
-    config.position &&
-    config.position.enabled &&
-    !(
-      config.movement &&
-      config.movement["circle-walk"] &&
-      config.movement["circle-walk"].enabled
-    )
-  ) {
-    bot.pathfinder.setMovements(defaultMove);
-    bot.pathfinder.setGoal(
-      new GoalBlock(config.position.x, config.position.y, config.position.z),
-    );
-    addLog("[Position] Navigating to configured position...");
-  }
+  // Disabled: conflicts with circle-walk pathfinder. Position goal is skipped entirely.
+  // Circle-walk handles all movement.
 
-  // ---------- ANTI-AFK ----------
+  // ---------- HUMAN-LIKE ANTI-DETECT BEHAVIOUR ----------
+  // All actions fire after a random delay post-spawn so the bot doesn't act
+  // robotically the instant it joins. Intervals are all randomised so no two
+  // actions repeat on a fixed pattern that an anti-bot plugin can fingerprint.
+
   if (config.utils["anti-afk"] && config.utils["anti-afk"].enabled) {
-    // Arm swinging
-    addInterval(
-      () => {
-        if (!bot || !botState.connected) return;
-        try {
-          bot.swingArm();
-        } catch (e) {}
-      },
-      10000 + Math.floor(Math.random() * 50000),
-    );
 
-    // Hotbar cycling
-    addInterval(
-      () => {
-        if (!bot || !botState.connected) return;
+    // 1. Random arm swing — like a player clicking around
+    const scheduleSwing = () => {
+      const delay = 8000 + Math.floor(Math.random() * 40000); // 8-48s
+      setTimeout(() => {
+        if (!bot || !botState.connected) return scheduleSwing();
+        try { bot.swingArm(); } catch (e) {}
+        botState.lastActivity = Date.now();
+        scheduleSwing();
+      }, delay);
+    };
+    setTimeout(scheduleSwing, 5000);
+
+    // 2. Random hotbar slot change — like a player selecting items
+    const scheduleHotbar = () => {
+      const delay = 20000 + Math.floor(Math.random() * 80000); // 20-100s
+      setTimeout(() => {
+        if (!bot || !botState.connected) return scheduleHotbar();
         try {
           const slot = Math.floor(Math.random() * 9);
           bot.setQuickBarSlot(slot);
         } catch (e) {}
-      },
-      30000 + Math.floor(Math.random() * 90000),
-    );
+        scheduleHotbar();
+      }, delay);
+    };
+    setTimeout(scheduleHotbar, 10000);
 
-    // Teabagging
-    addInterval(
-      () => {
-        if (
-          !bot ||
-          !botState.connected ||
-          typeof bot.setControlState !== "function"
-        )
-          return;
-        if (Math.random() > 0.9) {
-          let count = 2 + Math.floor(Math.random() * 4);
-          const doTeabag = () => {
-            if (count <= 0 || !bot || typeof bot.setControlState !== "function")
-              return;
-            try {
-              bot.setControlState("sneak", true);
-              setTimeout(() => {
-                if (bot && typeof bot.setControlState === "function")
-                  bot.setControlState("sneak", false);
-                count--;
-                setTimeout(doTeabag, 150);
-              }, 150);
-            } catch (e) {}
+    // 3. Occasional sneak (crouch) burst — very human-like behaviour
+    const scheduleSneak = () => {
+      const delay = 60000 + Math.floor(Math.random() * 120000); // 1-3 min
+      setTimeout(() => {
+        if (!bot || !botState.connected || typeof bot.setControlState !== "function")
+          return scheduleSneak();
+        try {
+          let count = 1 + Math.floor(Math.random() * 3); // 1-3 crouches
+          const doSneak = () => {
+            if (count-- <= 0 || !bot) return;
+            bot.setControlState("sneak", true);
+            setTimeout(() => {
+              if (bot && typeof bot.setControlState === "function")
+                bot.setControlState("sneak", false);
+              setTimeout(doSneak, 300 + Math.floor(Math.random() * 400));
+            }, 400 + Math.floor(Math.random() * 500));
           };
-          doTeabag();
-        }
-      },
-      120000 + Math.floor(Math.random() * 180000),
-    );
+          doSneak();
+        } catch (e) {}
+        scheduleSneak();
+      }, delay);
+    };
+    setTimeout(scheduleSneak, 15000);
 
-    // FIX: micro-walk only when circle-walk is NOT running, to avoid interrupting pathfinder
-    if (
-      !(
-        config.movement &&
-        config.movement["circle-walk"] &&
-        config.movement["circle-walk"].enabled
-      )
-    ) {
-      addInterval(
-        () => {
-          if (
-            !bot ||
-            !botState.connected ||
-            typeof bot.setControlState !== "function"
-          )
-            return;
-          try {
-            const yaw = Math.random() * Math.PI * 2;
-            bot.look(yaw, 0, true);
-            bot.setControlState("forward", true);
-            setTimeout(
-              () => {
-                if (bot && typeof bot.setControlState === "function")
-                  bot.setControlState("forward", false);
-              },
-              500 + Math.floor(Math.random() * 1500),
-            );
-            botState.lastActivity = Date.now();
-          } catch (e) {
-            addLog("[AntiAFK] Walk error:", e.message);
-          }
-        },
-        120000 + Math.floor(Math.random() * 360000),
-      );
-    }
+    // 4. Random look direction changes — simulates player looking around
+    const scheduleLook = () => {
+      const delay = 3000 + Math.floor(Math.random() * 12000); // 3-15s
+      setTimeout(() => {
+        if (!bot || !botState.connected) return scheduleLook();
+        try {
+          const yaw   = Math.random() * Math.PI * 2 - Math.PI;
+          const pitch = (Math.random() - 0.5) * (Math.PI / 2);
+          bot.look(yaw, pitch, false);
+          botState.lastActivity = Date.now();
+        } catch (e) {}
+        scheduleLook();
+      }, delay);
+    };
+    setTimeout(scheduleLook, 3000);
 
-    if (config.utils["anti-afk"].sneak) {
-      try {
-        if (typeof bot.setControlState === "function")
-          bot.setControlState("sneak", true);
-      } catch (e) {}
-    }
+    // 5. Occasional random jump
+    const scheduleJump = () => {
+      const delay = 15000 + Math.floor(Math.random() * 45000); // 15-60s
+      setTimeout(() => {
+        if (!bot || !botState.connected || typeof bot.setControlState !== "function")
+          return scheduleJump();
+        try {
+          bot.setControlState("jump", true);
+          setTimeout(() => {
+            if (bot && typeof bot.setControlState === "function")
+              bot.setControlState("jump", false);
+          }, 150 + Math.floor(Math.random() * 100));
+          botState.lastActivity = Date.now();
+        } catch (e) {}
+        scheduleJump();
+      }, delay);
+    };
+    setTimeout(scheduleJump, 8000);
+
+    // 6. Short forward-walk bursts — moves a step or two like a real player fidgeting
+    const scheduleWalk = () => {
+      const delay = 30000 + Math.floor(Math.random() * 90000); // 30-120s
+      setTimeout(() => {
+        if (!bot || !botState.connected || typeof bot.setControlState !== "function")
+          return scheduleWalk();
+        try {
+          // Pick a random direction to walk briefly
+          const directions = ["forward", "back", "left", "right"];
+          const dir = directions[Math.floor(Math.random() * directions.length)];
+          const walkDuration = 600 + Math.floor(Math.random() * 1400); // 0.6-2s
+          // Briefly face a new direction then walk
+          const yaw = Math.random() * Math.PI * 2 - Math.PI;
+          bot.look(yaw, 0, true);
+          setTimeout(() => {
+            if (!bot || !botState.connected) return;
+            bot.setControlState(dir, true);
+            setTimeout(() => {
+              if (bot && typeof bot.setControlState === "function") {
+                bot.setControlState(dir, false);
+              }
+            }, walkDuration);
+          }, 300);
+          botState.lastActivity = Date.now();
+        } catch (e) {}
+        scheduleWalk();
+      }, delay);
+    };
+    setTimeout(scheduleWalk, 20000);
+
+    addLog("[AntiDetect] Human-like behaviour modules started");
   }
 
-  // ---------- MOVEMENT MODULES ----------
-  // FIX: check top-level movement.enabled flag
-  if (config.movement && config.movement.enabled !== false) {
-    // FIX: circle-walk and random-jump both jump - only run one jumping mechanism
-    // random-jump is skipped if anti-afk jump is handled elsewhere; we only use random-jump here
-    if (
-      config.movement["circle-walk"] &&
-      config.movement["circle-walk"].enabled
-    ) {
-      startCircleWalk(bot, defaultMove);
-    }
-    // FIX: only run random-jump if circle-walk is NOT running (circle-walk also keeps bot moving)
-    if (
-      config.movement["random-jump"] &&
-      config.movement["random-jump"].enabled &&
-      !(
-        config.movement["circle-walk"] && config.movement["circle-walk"].enabled
-      )
-    ) {
-      startRandomJump(bot);
-    }
-    if (
-      config.movement["look-around"] &&
-      config.movement["look-around"].enabled
-    ) {
-      startLookAround(bot);
-    }
+  // ---------- CIRCLE WALK (pathfinder) ----------
+  // Only run if enabled — uses pathfinder to walk a circle, most human-looking movement
+  if (config.movement && config.movement.enabled !== false &&
+      config.movement["circle-walk"] && config.movement["circle-walk"].enabled) {
+    startCircleWalk(bot, defaultMove);
   }
 
   // ---------- CUSTOM MODULES ----------
-  // FIX: avoidMobs AND combatModule conflict - if combat is enabled, don't run avoidMobs at the same time
   if (config.modules.avoidMobs && !config.modules.combat) {
     avoidMobs(bot);
   }
@@ -1644,67 +1633,53 @@ function initializeModules(bot, mcData, defaultMove) {
 // MOVEMENT HELPERS
 // ============================================================
 function startCircleWalk(bot, defaultMove) {
-  const radius = config.movement["circle-walk"].radius;
+  const radius = config.movement["circle-walk"].radius || 4;
   let angle = 0;
-  let lastPathTime = 0;
+  let isPausing = false;
 
-  addInterval(() => {
-    if (!bot || !botState.connected) return;
-    const now = Date.now();
-    if (now - lastPathTime < 2000) return;
-    lastPathTime = now;
-    try {
-      const x = bot.entity.position.x + Math.cos(angle) * radius;
-      const z = bot.entity.position.z + Math.sin(angle) * radius;
-      bot.pathfinder.setMovements(defaultMove);
-      bot.pathfinder.setGoal(
-        new GoalBlock(
-          Math.floor(x),
-          Math.floor(bot.entity.position.y),
-          Math.floor(z),
-        ),
-      );
-      angle += Math.PI / 4;
-      botState.lastActivity = Date.now();
-    } catch (e) {
-      addLog("[CircleWalk] Error:", e.message);
-    }
-  }, config.movement["circle-walk"].speed);
-}
-
-function startRandomJump(bot) {
-  addInterval(() => {
-    if (
-      !bot ||
-      !botState.connected ||
-      typeof bot.setControlState !== "function"
-    )
-      return;
-    try {
-      bot.setControlState("jump", true);
+  // Use self-scheduling timeout instead of fixed interval so speed varies
+  const scheduleNextStep = () => {
+    // Occasionally pause like a real player would
+    if (Math.random() < 0.15) {
+      isPausing = true;
+      const pauseTime = 3000 + Math.floor(Math.random() * 8000); // 3-11s pause
+      addLog(`[CircleWalk] Taking a ${Math.round(pauseTime/1000)}s break`);
       setTimeout(() => {
-        if (bot && typeof bot.setControlState === "function")
-          bot.setControlState("jump", false);
-      }, 300);
-      botState.lastActivity = Date.now();
-    } catch (e) {
-      addLog("[RandomJump] Error:", e.message);
+        isPausing = false;
+        scheduleNextStep();
+      }, pauseTime);
+      return;
     }
-  }, config.movement["random-jump"].interval);
-}
 
-function startLookAround(bot) {
-  addInterval(() => {
-    if (!bot || !botState.connected) return;
-    try {
-      const yaw = Math.random() * Math.PI * 2 - Math.PI;
-      const pitch = (Math.random() * Math.PI) / 2 - Math.PI / 4;
-      bot.look(yaw, pitch, false);
-      botState.lastActivity = Date.now();
-    } catch (e) {
-      addLog("[LookAround] Error:", e.message);
-    }
-  }, config.movement["look-around"].interval);
+    // Variable step speed — sometimes fast, sometimes slow
+    const stepDelay = 2000 + Math.floor(Math.random() * 4000); // 2-6s per step
+
+    setTimeout(() => {
+      if (!bot || !botState.connected) return scheduleNextStep();
+      try {
+        const x = bot.entity.position.x + Math.cos(angle) * radius;
+        const z = bot.entity.position.z + Math.sin(angle) * radius;
+        bot.pathfinder.setMovements(defaultMove);
+        bot.pathfinder.setGoal(
+          new GoalBlock(
+            Math.floor(x),
+            Math.floor(bot.entity.position.y),
+            Math.floor(z),
+          ),
+        );
+        // Step size varies — sometimes a small move, sometimes a bigger arc
+        angle += (Math.PI / 4) * (0.5 + Math.random());
+        botState.lastActivity = Date.now();
+      } catch (e) {
+        addLog("[CircleWalk] Error: " + e.message);
+      }
+      scheduleNextStep();
+    }, stepDelay);
+  };
+
+  // Delay start so auth finishes first
+  setTimeout(scheduleNextStep, 8000);
+  addLog("[CircleWalk] Started — variable speed human-like walking");
 }
 
 // ============================================================
