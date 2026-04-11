@@ -1,43 +1,12 @@
-const { addLog, getLogs } = require("./logger");
+const { addLog } = require("./logger");
 const mineflayer = require("mineflayer");
 const { Movements, pathfinder, goals } = require("mineflayer-pathfinder");
 const { GoalNear } = goals;
 const config = require("./settings.json");
-const express = require("express");
-const http = require("http");
-
-const app = express();
-app.use(express.json());
-const PORT = process.env.PORT || 3000;
 
 let bot = null;
 let activeIntervals = [];
 
-let botState = {
-  connected: false,
-  reconnectAttempts: 0,
-};
-
-// ================= SERVER =================
-app.get("/ping", (req, res) => res.send("pong"));
-
-app.get("/health", (req, res) => {
-  res.json({
-    status: botState.connected ? "connected" : "disconnected",
-    coords: bot?.entity?.position || null,
-  });
-});
-
-app.listen(PORT, "0.0.0.0", () => {
-  addLog(`[Server] Running on ${PORT}`);
-});
-
-// keep alive
-setInterval(() => {
-  http.get(`http://localhost:${PORT}/ping`, () => {});
-}, 240000);
-
-// ================= UTIL =================
 function clearAllIntervals() {
   activeIntervals.forEach(clearInterval);
   activeIntervals = [];
@@ -47,7 +16,6 @@ function addInterval(fn, delay) {
   activeIntervals.push(setInterval(fn, delay));
 }
 
-// ================= BOT =================
 function createBot() {
   if (bot) {
     try { bot.end(); } catch {}
@@ -67,31 +35,27 @@ function createBot() {
   bot.loadPlugin(pathfinder);
 
   bot.once("spawn", () => {
-    botState.connected = true;
     addLog("[Bot] ✓ Connected");
 
     const mcData = require("minecraft-data")(bot.version);
     const moves = new Movements(bot, mcData);
 
-    // 🔥 Anti-cheat safe settings
     moves.allowFreeMotion = false;
-    moves.allowSprinting = false; // sprinting can flag anti-cheat
+    moves.allowSprinting = false;
     moves.canDig = false;
 
     bot.pathfinder.setMovements(moves);
 
-    startAntiAFK(bot);
+    // 🔥 IMPORTANT DELAY (fixes 90% of "not moving")
+    setTimeout(() => {
+      startAntiAFK();
+    }, 5000);
   });
 
   bot.on("end", () => {
     addLog("[Bot] Disconnected");
-    botState.connected = false;
     clearAllIntervals();
     setTimeout(createBot, 5000);
-  });
-
-  bot.on("kicked", (r) => {
-    addLog("[Bot] Kicked: " + r);
   });
 
   bot.on("error", (e) => {
@@ -99,32 +63,33 @@ function createBot() {
   });
 }
 
-// ================= ANTI-AFK =================
-function startAntiAFK(bot) {
-
-  const center = bot.entity.position.clone();
+function startAntiAFK() {
+  let center = bot.entity.position.clone();
   let angle = 0;
 
-  // SAFE WALKING (anti-cheat friendly)
+  addLog("[AntiAFK] Started");
+
+  // 🔥 MAIN MOVEMENT (pathfinder)
   addInterval(() => {
     if (!bot.entity) return;
 
-    if (bot.pathfinder.isMoving()) return;
+    // update center (prevents stuck behavior)
+    center = bot.entity.position.clone();
 
-    const radius = 2 + Math.random(); // random radius
+    if (!bot.pathfinder.isMoving()) {
+      const x = center.x + Math.cos(angle) * 2;
+      const z = center.z + Math.sin(angle) * 2;
 
-    const x = center.x + Math.cos(angle) * radius;
-    const z = center.z + Math.sin(angle) * radius;
+      bot.pathfinder.setGoal(
+        new GoalNear(x, center.y, z, 1)
+      );
 
-    bot.pathfinder.setGoal(
-      new GoalNear(x, center.y, z, 1)
-    );
+      angle += Math.PI / 4;
+    }
 
-    angle += Math.PI / 6;
+  }, 4000);
 
-  }, 3000); // slower = safer
-
-  // HUMAN-LIKE IDLE MOVEMENT
+  // 🔥 FALLBACK MOVEMENT (GUARANTEED movement)
   addInterval(() => {
     if (!bot.entity) return;
 
@@ -135,11 +100,11 @@ function startAntiAFK(bot) {
 
     setTimeout(() => {
       bot.setControlState(action, false);
-    }, 800 + Math.random() * 1200);
+    }, 1000 + Math.random() * 1000);
 
-  }, 7000);
+  }, 6000);
 
-  // RANDOM LOOK (very important for anti-cheat)
+  // LOOK AROUND
   addInterval(() => {
     if (!bot.entity) return;
 
@@ -151,38 +116,24 @@ function startAntiAFK(bot) {
 
   }, 5000);
 
-  // OCCASIONAL JUMP (not spam)
+  // JUMP
   addInterval(() => {
     if (!bot.entity) return;
 
     bot.setControlState("jump", true);
-
     setTimeout(() => {
       bot.setControlState("jump", false);
-    }, 250);
+    }, 300);
 
   }, 15000);
 
-  // RARE ARM SWING
+  // ARM SWING
   addInterval(() => {
     if (!bot.entity) return;
     bot.swingArm();
   }, 20000);
 
-  // RANDOM PAUSE (VERY HUMAN)
-  addInterval(() => {
-    if (!bot.entity) return;
-
-    bot.clearControlStates();
-
-  }, 12000);
-
-  addLog("[AntiAFK] Running (anti-cheat safe)");
+  // ⚠️ REMOVED clearControlStates (THIS WAS BREAKING EVERYTHING)
 }
-
-// ================= START =================
-addLog("=================================");
-addLog("FANTOMAFK v4 (Anti-Cheat Edition)");
-addLog("=================================");
 
 createBot();
