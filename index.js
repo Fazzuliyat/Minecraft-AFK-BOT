@@ -204,7 +204,7 @@ function createBot() {
     const moves = new Movements(bot, mcData);
     moves.allowFreeMotion = false;
     moves.allowSprinting = false;
-    moves.canDig = false;
+    moves.canDig = true; // needed for block activity module
     bot.pathfinder.setMovements(moves);
 
     // Delay starting modules so auth finishes first
@@ -212,6 +212,8 @@ function createBot() {
       if (!bot || !botConnected) return;
       startAntiAFK();
       startSleepSystem();
+      startBlockActivity();
+      startInventoryActivity();
       addLog("[Bot] All modules started");
     }, 6000);
   });
@@ -369,6 +371,136 @@ function startAntiAFK() {
       if (bot?.entity) bot.setControlState("sneak", false);
     }, 500 + Math.floor(Math.random() * 800));
   }), 60000 + Math.floor(Math.random() * 60000));
+}
+
+// ============================================================
+// BLOCK ACTIVITY — dig a dirt/grass block then place it back
+// This is the most convincing "real player" signal to Aternos
+// ============================================================
+function startBlockActivity() {
+  // Blocks safe to dig and replace (won't grief the server)
+  const SAFE_BLOCKS = ["dirt", "grass_block", "coarse_dirt", "gravel", "sand"];
+
+  // Runs every 3-6 minutes — real players don't constantly mine
+  const scheduleNext = () => {
+    const delay = 180000 + Math.floor(Math.random() * 180000); // 3-6 min
+    setTimeout(async () => {
+      if (!bot?.entity || !botConnected || isSleeping) return scheduleNext();
+
+      try {
+        const mcData = require("minecraft-data")(bot.version);
+
+        // Find a nearby safe block to dig
+        const target = bot.findBlock({
+          matching: (block) => SAFE_BLOCKS.includes(block.name),
+          maxDistance: 4,
+          useExtraInfo: false,
+        });
+
+        if (!target) {
+          addLog("[Block] No safe block nearby to interact with");
+          return scheduleNext();
+        }
+
+        addLog("[Block] Digging " + target.name + " at " + target.position);
+
+        // Look at the block first like a real player would
+        await bot.lookAt(target.position.offset(0.5, 0.5, 0.5));
+        await new Promise(r => setTimeout(r, 300 + Math.floor(Math.random() * 400)));
+
+        // Dig it
+        await bot.dig(target);
+        addLog("[Block] Dug block successfully");
+
+        // Wait a moment like a player pausing after digging
+        await new Promise(r => setTimeout(r, 800 + Math.floor(Math.random() * 1200)));
+
+        // Place it back if we have the block in inventory
+        const item = bot.inventory.items().find(i =>
+          SAFE_BLOCKS.some(name => i.name.includes(name.replace("_block", "")))
+        );
+
+        if (item && bot.entity) {
+          try {
+            await bot.equip(item, "hand");
+            // Place back on the same spot (reference block below)
+            const below = target.position.offset(0, -1, 0);
+            const refBlock = bot.blockAt(below);
+            if (refBlock && refBlock.name !== "air") {
+              await bot.placeBlock(refBlock, new (require("vec3"))(0, 1, 0));
+              addLog("[Block] Placed " + item.name + " back");
+            }
+          } catch (placeErr) {
+            addLog("[Block] Couldn't place back: " + placeErr.message);
+          }
+        }
+
+      } catch (e) {
+        addLog("[Block] Error: " + e.message);
+      }
+
+      scheduleNext();
+    }, delay);
+  };
+
+  // First run after 2 minutes so the bot is settled in
+  setTimeout(scheduleNext, 120000);
+  addLog("[Block] Block activity module started");
+}
+
+// ============================================================
+// INVENTORY ACTIVITY — open/close inventory, move items around
+// Servers can see inventory open/close packets — very human signal
+// ============================================================
+function startInventoryActivity() {
+  const scheduleNext = () => {
+    const delay = 120000 + Math.floor(Math.random() * 180000); // 2-5 min
+    setTimeout(async () => {
+      if (!bot?.entity || !botConnected || isSleeping) return scheduleNext();
+
+      try {
+        // Open inventory window
+        const window = await bot.openChest(null).catch(() => null);
+        // openChest(null) doesn't work for player inv — use lower level approach
+        // Instead simulate crafting table look-around or just chest if nearby
+
+        // Find a chest nearby to open
+        const chest = bot.findBlock({
+          matching: (b) => b.name.includes("chest"),
+          maxDistance: 8,
+        });
+
+        if (chest) {
+          addLog("[Inventory] Opening nearby chest");
+          const container = await bot.openChest(chest);
+          // Stare at chest for 2-5s like reading contents
+          await new Promise(r => setTimeout(r, 2000 + Math.floor(Math.random() * 3000)));
+          container.close();
+          addLog("[Inventory] Closed chest");
+        } else {
+          // No chest — just swap hotbar items around to simulate inventory use
+          const items = bot.inventory.items();
+          if (items.length >= 2) {
+            addLog("[Inventory] Rearranging hotbar items");
+            // Pick random slot and move item — simulates player organising inventory
+            const slot = Math.floor(Math.random() * 9);
+            bot.setQuickBarSlot(slot);
+            await new Promise(r => setTimeout(r, 500 + Math.floor(Math.random() * 500)));
+            bot.setQuickBarSlot((slot + 1) % 9);
+          }
+        }
+
+      } catch (e) {
+        // Inventory errors are non-critical
+        addLog("[Inventory] " + e.message);
+      }
+
+      scheduleNext();
+    }, delay);
+  };
+
+  setTimeout(scheduleNext, 90000); // first run after 1.5 min
+  addLog("[Inventory] Inventory activity module started");
 }
 
 // ============================================================
